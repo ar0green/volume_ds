@@ -1,136 +1,137 @@
 import streamlit as st
-import re
+import sys
+sys.path.append('.')  # Ensure the script can find the memory calculator module
+from memory_calculator import DatasetMemoryCalculator
 
-st.title("Примерный подсчет объема выборки по схеме данных")
+'''
+test SQL expression to import
+CREATE TABLE customer_orders (
+    order_id BIGINT PRIMARY KEY,
+    customer_name VARCHAR(100),
+    email VARCHAR(255),
+    order_date DATETIME,
+    total_amount DECIMAL(10, 2),
+    is_paid BOOLEAN,
+    product_quantity SMALLINT,
+    customer_age INT,
+    shipping_weight FLOAT,
+    order_status VARCHAR(50)
+);
+'''
 
-st.markdown("""
-Это приложение позволит предварительно посчитать объем памяти, занимаемый выборкой с заданным числом строк по метаданным таблицы.
-""")
-
-# Вариант ввода: через CREATE TABLE или вручную
-input_mode = st.radio("Выберите режим ввода схемы", ["CREATE TABLE", "Ручной ввод столбцов"])
-
-def parse_create_table_ddl(ddl):
-    """
-    Примитивный парсер для извлечения столбцов и их типов из DDL вида CREATE TABLE.
-    Предполагаем формат:
-    CREATE TABLE table_name (
-       col1 INT,
-       col2 VARCHAR(100),
-       ...
+def main():
+    st.set_page_config(
+        page_title="Dataset Memory Size Calculator",
+        page_icon="💾",
+        layout="wide"
     )
-    """
-    # Упростим задачу: достанем всё, что внутри круглых скобок, разобьём по запятой и вытащим типы
-    
-    # Найдём содержимое скобок
-    m = re.search(r'CREATE TABLE.*?\((.*?)\)', ddl, flags=re.IGNORECASE|re.DOTALL)
-    if not m:
-        return []
-    columns_part = m.group(1)
-    
-    # Разбиваем по запятым с учётом, что могут быть переносы строк
-    raw_columns = [c.strip() for c in columns_part.split(',') if c.strip()]
-    
-    columns = []
-    type_pattern = re.compile(r'(\w+)\s+(\w+(\(\d+\))?)', re.IGNORECASE)
-    for col_def in raw_columns:
-        match = type_pattern.search(col_def)
-        if match:
-            col_name = match.group(1)
-            col_type = match.group(2)
-            columns.append((col_name, col_type))
-    return columns
 
-def estimate_column_size(col_type):
-    """
-    Оценка размера столбца на основе типа.
-    Предполагаем простые типы: INT, BIGINT, FLOAT, DOUBLE, DATE, TIMESTAMP, VARCHAR(N), CHAR(N).
-    """
-    col_type = col_type.upper().strip()
-    
-    # Словарь с размерами типов
-    type_sizes = {
-        "INT": 4,
-        "BIGINT": 8,
-        "FLOAT": 4,
-        "DOUBLE": 8,
-        "DATE": 3,
-        "TIMESTAMP": 8,
-        # Для VARCHAR и CHAR специальная логика ниже
-    }
-    
-    var_match = re.match(r'(VARCHAR|CHAR)\((\d+)\)', col_type)
-    if var_match:
-        base_type = var_match.group(1)
-        length = int(var_match.group(2))
-        return length  # для упрощения считаем кол-во байт = длине
-    
-    # Если просто VARCHAR без длины - 255
-    if col_type.startswith("VARCHAR"):
-        return 255
-    
-    # Если просто CHAR без длины - 1
-    if col_type.startswith("CHAR"):
-        return 1
-    
-    if col_type in type_sizes:
-        return type_sizes[col_type]
-    
-    # Неизвестный тип - 4 байта
-    return 4
+    st.title("📊 Dataset Memory Size Estimator")
+    st.markdown("""
+    Calculate the estimated memory consumption of your dataset 
+    by defining columns and specifying the number of rows.
+    """)
 
-def format_size(bytes_size):
-    """
-    Форматирование размера в человекочитаемый вид (байты, КБ, МБ, ГБ).
-    """
-    for unit in ['Б', 'КБ', 'МБ', 'ГБ', 'ТБ']:
-        if bytes_size < 1024.0:
-            return f"{bytes_size:3.1f} {unit}"
-        bytes_size /= 1024.0
+    # Initialize session state for columns if not exists
+    if 'columns' not in st.session_state:
+        st.session_state.columns = []
 
-
-if input_mode == "CREATE TABLE":
-    ddl_input = st.text_area("Вставьте выражение CREATE TABLE:", height=200)
-    if ddl_input:
-        columns = parse_create_table_ddl(ddl_input)
-        if columns:
-            st.write("Найденные столбцы:")
-            for c in columns:
-                st.write(f"- {c[0]}: {c[1]}")
-            
-            row_count = st.number_input("Количество строк:", min_value=1, value=1000000)
-            if st.button("Рассчитать"):
-                total_per_row = 0
-                for _, col_t in columns:
-                    total_per_row += estimate_column_size(col_t)
-                
-                total_size = total_per_row * row_count
-                st.write(f"Размер одной строки: {total_per_row} байт")
-                st.write(f"Общий размер: {total_size} байт ({format_size(total_size)})")
-        else:
-            st.warning("Не удалось распарсить столбцы из DDL.")
-            
-else:
-    st.write("Добавьте столбцы вручную")
-    num_cols = st.number_input("Сколько столбцов?", min_value=1, value=3)
-    
-    cols_data = []
-    for i in range(num_cols):
-        st.markdown(f"**Столбец {i+1}**")
-        c_name = st.text_input(f"Имя столбца {i+1}", value=f"col{i+1}")
-        c_type = st.selectbox(f"Тип столбца {i+1}", 
-                              ["INT", "BIGINT", "FLOAT", "DOUBLE", "DATE", "TIMESTAMP", "VARCHAR(255)", "CHAR(10)"],
-                              index=0,
-                              key=f"type_{i}")
-        cols_data.append((c_name, c_type))
+    # Sidebar for column management
+    with st.sidebar:
+        st.header("Add Columns")
         
-        if i < num_cols - 1:
-            st.markdown("---")
+        # Column input fields
+        col_name = st.text_input("Column Name")
+        data_types = [
+            'int8', 'int16', 'int32', 'int64', 
+            'float32', 'float64', 'bool', 
+            'datetime', 'string'
+        ]
+        col_type = st.selectbox("Data Type", data_types)
+        
+        # Optional length for string type
+        col_length = None
+        if col_type == 'string':
+            col_length = st.number_input(
+                "Estimated Average String Length", 
+                min_value=1, 
+                value=50
+            )
+        
+        # Add Column Button
+        if st.button("Add Column"):
+            if col_name:
+                column_details = {
+                    'name': col_name, 
+                    'type': col_type, 
+                    'length': col_length
+                }
+                st.session_state.columns.append(column_details)
+                st.sidebar.success(f"Column '{col_name}' added!")
+        
+        # SQL Import Section
+        st.header("Import from SQL")
+        sql_input = st.text_area("Paste CREATE TABLE Statement")
+        if st.button("Parse SQL"):
+            try:
+                calculator = DatasetMemoryCalculator()
+                calculator.parse_create_table_sql(sql_input)
+                st.session_state.columns = [
+                    {'name': col['name'], 'type': col['type'], 'length': col.get('length')} 
+                    for col in calculator.columns
+                ]
+                st.sidebar.success("SQL Parsed Successfully!")
+            except Exception as e:
+                st.sidebar.error(f"Error parsing SQL: {e}")
+
+    # Main Content Area
+    st.header("Defined Columns")
     
-    row_count = st.number_input("Количество строк:", min_value=1, value=1000000)
-    
-    if st.button("Рассчитать"):
-        total_per_row = sum(estimate_column_size(ct) for _, ct in cols_data)
-        total_size = total_per_row * row_count
-        st.write(f"Размер одной строки: {total_per_row} байт")
-        st.write(f"Общий размер: {total_size} байт ({format_size(total_size)})")
+    # Display Current Columns
+    if st.session_state.columns:
+        columns_df = st.dataframe(st.session_state.columns)
+        
+        # Number of Rows Input
+        num_rows = st.number_input(
+            "Number of Rows", 
+            min_value=1, 
+            value=1000,
+            help="Estimated number of rows in your dataset"
+        )
+        
+        # Calculate Memory Button
+        if st.button("Calculate Memory Consumption"):
+            calculator = DatasetMemoryCalculator()
+            
+            # Add columns to calculator
+            for col in st.session_state.columns:
+                calculator.add_column(
+                    col['name'], 
+                    col['type'], 
+                    col.get('length')
+                )
+            
+            # Calculate memory
+            memory_result = calculator.calculate_total_memory(num_rows)
+            
+            # Display Results
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Bytes", f"{memory_result['total_bytes']:,.0f}")
+            with col2:
+                st.metric("Kilobytes", f"{memory_result['total_kb']:,.2f}")
+            with col3:
+                st.metric("Megabytes", f"{memory_result['total_mb']:,.2f}")
+            with col4:
+                st.metric("Gigabytes", f"{memory_result['total_gb']:,.2f}")
+    else:
+        st.info("Add columns using the sidebar to start calculating.")
+
+    # Reset Columns Button
+    if st.button("Reset All Columns"):
+        # Use clear() instead of setting to empty list
+        st.session_state.columns.clear()
+        st.rerun()
+
+if __name__ == "__main__":
+    main()
